@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mongodb-forks/digest"
@@ -248,24 +249,55 @@ func (c *AtlasClient) DeleteClusterLogs(ctx context.Context, logFiles []string) 
 func (c *AtlasClient) DownloadClusterLogs(ctx context.Context, publicKey, privateKey, projectID, clusterName string, startDate int64, endDate int64) (map[string]string, error) {
 	Logger.Info("Downloading Atlas cluster logs")
 	var hostLogMapping = make(map[string]string)
-	atlasClusterInfo, error := c.getAtlasClusterInfo(ctx, publicKey, privateKey, projectID, clusterName)
-	if error != nil {
-		return nil, fmt.Errorf("failed to get cluster info: %w", error)
+	atlasClusterInfo, err := c.getAtlasClusterInfo(ctx, publicKey, privateKey, projectID, clusterName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get cluster info: %w", err)
 	}
 	hosts, ports, err := GetHostsFromConnectionString(atlasClusterInfo.ConnectionStrings.Standard)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get hosts from connection string: %w", err)
 	}
 	var logFiles []string
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(hosts))
+	hostLogMappingChan := make(chan struct {
+		key     string
+		logFile string
+	}, len(hosts))
+
 	for i, host := range hosts {
-		Logger.WithFields(logrus.Fields{"host": host}).Info("Downloading logs for host")
-		logFile, err := c.downloadClusterLogsForHost(ctx, publicKey, privateKey, projectID, host, startDate, endDate)
-		if err != nil {
-			_ = c.DeleteClusterLogs(ctx, logFiles)
-			return nil, fmt.Errorf("failed to download logs for host %s: %w", host, err)
-		}
-		hostLogMapping[fmt.Sprintf("%s:%s", host, ports[i])] = logFile
-		logFiles = append(logFiles, logFile)
+		wg.Add(1)
+		go func(i int, host string) {
+			defer wg.Done()
+			Logger.WithFields(logrus.Fields{"host": host}).Info("Downloading logs for host")
+			logFile, err := c.downloadClusterLogsForHost(ctx, publicKey, privateKey, projectID, host, startDate, endDate)
+			if err != nil {
+				errChan <- fmt.Errorf("failed to download logs for host %s: %w", host, err)
+				return
+			}
+			hostLogMappingChan <- struct {
+				key     string
+				logFile string
+			}{fmt.Sprintf("%s:%s", host, ports[i]), logFile}
+			mu.Lock()
+			logFiles = append(logFiles, logFile)
+			mu.Unlock()
+		}(i, host)
+	}
+
+	wg.Wait()
+	close(errChan)
+	close(hostLogMappingChan)
+
+	// Check for errors
+	if len(errChan) > 0 {
+		_ = c.DeleteClusterLogs(ctx, logFiles)
+		return nil, <-errChan
+	}
+
+	for entry := range hostLogMappingChan {
+		hostLogMapping[entry.key] = entry.logFile
 	}
 	return hostLogMapping, nil
 }

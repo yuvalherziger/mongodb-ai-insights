@@ -17,6 +17,7 @@ type Config struct {
 	ClusterName     string   `json:"clusterName"`
 	Period          string   `json:"period"`
 	LogLevel        string   `json:"logLevel"`
+	MongoURI        string   `json:"mongoUri"`
 }
 
 var (
