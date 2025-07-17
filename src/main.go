@@ -40,4 +40,9 @@ func main() {
 		Logger.Error("Failed to generate slow query report", err)
 		os.Exit(1)
 	}
+	err = lc.GenerateMetricsAnalysisReport(ctx, ac, dbName)
+	if err != nil {
+		Logger.Error("Failed to generate metrics analysis report", err)
+		os.Exit(1)
+	}
 }

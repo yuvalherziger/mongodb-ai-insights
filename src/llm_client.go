@@ -122,20 +122,18 @@ func (c *LLMClient) GenerateSlowQueryReport(ctx context.Context, dbName string) 
 	return nil
 }
 
-func (c *LLMClient) GenerateMetricsAnalysisReport(ctx context.Context, ac *AtlasClient) error {
+func (c *LLMClient) GenerateMetricsAnalysisReport(ctx context.Context, ac *AtlasClient, dbName string) error {
 	cfg, err := GetConfig()
-	start, end := ConvertISO8601DurationToUnixTimestamp(cfg.Period)
-	hostLogMapping, err := ac.DownloadClusterLogs(ctx, cfg.AtlasPublicKey, cfg.AtlasPrivateKey, cfg.ProjectId, cfg.ClusterName, start, end)
+	hostnames, err := GetHostNames(ctx, dbName)
 	if err != nil {
 		panic(err)
 	}
-	fileReader := &DefaultFileReader{}
 	var metricFiles []string
 
 	var eventStrings []string
 	// Iterate hostLogMapping keys and values, and use GetPrimaryElectionEvents
-	for host, logFile := range hostLogMapping {
-		events, err := GetPrimaryElectionEvents(fileReader, logFile)
+	for _, host := range hostnames {
+		events, err := GetPrimaryElectionEvents(ctx, dbName)
 		if err != nil {
 			panic(err)
 		}

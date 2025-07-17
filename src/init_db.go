@@ -11,7 +11,11 @@ func InitDb(ctx context.Context, ac *AtlasClient, dbName string) error {
 	}
 	fileReader := &DefaultFileReader{}
 	for host, logFile := range hostLogMapping {
-		AnalyzeLogStream(ctx, fileReader, logFile, host, dbName)
+		err = ProcessLogStream(ctx, fileReader, logFile, host, dbName)
+		if err != nil {
+			Logger.Error("Error creating indexes", err)
+			return err
+		}
 	}
 	err = CreateSlowQueriesByDriver(ctx, dbName)
 	if err != nil {

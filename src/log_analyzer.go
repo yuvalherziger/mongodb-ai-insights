@@ -71,40 +71,20 @@ func (d *DefaultFileReader) GetExtension(filePath string) string {
 	return strings.ToLower(filepath.Ext(filePath))
 }
 
-func GetPrimaryElectionEvents(fileReader FileReader, logPath string) ([]string, error) {
-	file, err := fileReader.Open(logPath)
+func GetPrimaryElectionEvents(ctx context.Context, dbName string) ([]string, error) {
+	events, err := ListPrimaryElectionEvents(ctx, dbName)
+	var primaryTransitionTimes []string
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	ext := fileReader.GetExtension(logPath)
-	if ext == ".gz" {
-		gzReader, err := gzip.NewReader(file)
-		if err != nil {
-			return nil, err
-		}
-		defer gzReader.Close()
-		return analyzeLogStream(gzReader)
-	}
-	return analyzeLogStream(file)
-}
 
-func analyzeLogStream(r io.Reader) ([]string, error) {
-	var primaryTransitionTimes []string
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(line, transitionToPrimary) {
-			var entry LogEntry
-			if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-			}
-			primaryTransitionTimes = append(primaryTransitionTimes, time.UnixMilli(int64(entry.T.Date)).Format(time.RFC3339Nano))
-		}
+	for _, event := range events {
+		primaryTransitionTimes = append(primaryTransitionTimes, time.UnixMilli(int64(event.T.Date)).Format(time.RFC3339Nano))
 	}
 	return primaryTransitionTimes, nil
 }
-func AnalyzeLogStream(ctx context.Context, fr FileReader, logPath string, host string, dbName string) error {
+
+func ProcessLogStream(ctx context.Context, fr FileReader, logPath string, host string, dbName string) error {
 	Logger.Info("Analyzing log stream")
 	file, err := fr.Open(logPath)
 	var r io.Reader

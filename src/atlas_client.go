@@ -107,7 +107,7 @@ func (c *AtlasClient) GetMeasurementsForHost(ctx context.Context, opts *Measurem
 		q.Set("end", opts.End)
 	}
 	if opts.Granularity == "" {
-		opts.Granularity = ONE_MINUTE
+		opts.Granularity = ONE_HOUR
 	}
 
 	u.Path = fmt.Sprintf("/api/atlas/v2/groups/%s/processes/%s/measurements",
