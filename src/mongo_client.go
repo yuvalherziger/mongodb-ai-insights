@@ -96,6 +96,12 @@ func CreateIndexes(ctx context.Context, dbName string) error {
 	if err != nil {
 		return err
 	}
+	err = CreateIndex(indexCtx, clientMetadataColl, bson.D{
+		{"host", -1},
+	})
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -221,6 +227,26 @@ func CreateSlowQueriesByDriver(ctx context.Context, dbName string) error {
 	return err
 }
 
+func ListPrimaryElectionEvents(ctx context.Context, dbName string) ([]LogEntry, error) {
+	client, err := GetMongoClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	collection := client.Database(dbName).Collection("primaryChangeEvents")
+	res, err := collection.Find(ctx, bson.D{})
+	if err != nil {
+		Logger.Error(err)
+	}
+
+	var docs []LogEntry
+	err = res.All(ctx, &docs)
+	if err != nil {
+		Logger.Error(err)
+		return nil, err
+	}
+	return docs, nil
+}
+
 func GetTopQueryShapesByExecutionTime(ctx context.Context, dbName string, topN int) ([]SlowQueryByDriver, error) {
 	client, err := GetMongoClient(ctx)
 	if err != nil {
@@ -299,4 +325,24 @@ func GetSlowestQueryByShape(ctx context.Context, dbName string, queryHash string
 		return doc, nil
 	}
 	panic("Query hash not found")
+}
+
+func GetHostNames(ctx context.Context, dbName string) ([]string, error) {
+	Logger.Info("Identifying Host names")
+	const hostField = "host"
+	var hostnames []string
+	client, err := GetMongoClient(ctx)
+	if err != nil {
+		Logger.Error("Error getting MongoDB client", err)
+		return nil, err
+	}
+	collection := client.Database(dbName).Collection("clientMetadata")
+	err = collection.Distinct(ctx, hostField, bson.D{}).Decode(&hostnames)
+	if err != nil {
+		Logger.Error("Error listing hostnames", err)
+		return nil, err
+	}
+	Logger.WithField("hostnames", hostnames).Info("Identifying Host names")
+	return hostnames, nil
+
 }

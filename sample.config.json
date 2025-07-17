@@ -15,6 +15,7 @@
   "projectId": "**************",
   "clusterName": "**************",
   "period": "PT48H",
+  "metricsGranularity": "PT1H",
   "logLevel": "info",
   "numAnalyzedQueries": 10,
   "outputMongoUri": "mongodb://localhost:27017/?directConnection=true"

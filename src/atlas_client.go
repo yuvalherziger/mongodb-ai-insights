@@ -2,19 +2,17 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/mongodb-forks/digest"
 	"github.com/sirupsen/logrus"
+	"go.mongodb.org/atlas-sdk/v20250312005/admin"
 	"go.mongodb.org/mongo-driver/v2/x/mongo/driver/connstring"
 )
 
@@ -24,209 +22,115 @@ var (
 	ONE_DAY    = "P1D"
 )
 
-type DataPoints struct {
-	Timestamp string  `json:"timestamp"`
-	Value     float64 `json:"value,omitempty"`
-}
-
-type Measurement struct {
-	ClusterName string       `json:"clusterName"`
-	Name        string       `json:"name"`
-	Units       string       `json:"units"`
-	DataPoints  []DataPoints `json:"dataPoints"`
-}
-
-type Link struct {
-	Href string `json:"href"`
-	Rel  string `json:"rel"`
-}
-
-type MeasurementsResponse struct {
-	Start        string        `json:"start"`
-	End          string        `json:"end"`
-	Granularity  string        `json:"granularity"`
-	GroupId      string        `json:"groupId"`
-	HostId       string        `json:"hostId"`
-	Links        []Link        `json:"links"`
-	ProcessId    string        `json:"processId"`
-	Measurements []Measurement `json:"measurements"`
-}
-
-type AtlasClusterInfo struct {
-	ConnectionStrings struct {
-		Standard    string `json:"standard"`
-		StandardSrv string `json:"standardSrv"`
-	} `json:"connectionStrings"`
-}
-
 type AtlasClient struct {
-	BaseURL    string
 	HTTPClient *http.Client
+	AtlasSDK   *admin.APIClient
 }
 
-type MeasurementsRequestSettings struct {
-	ProjectId   string
-	ProcessId   string
-	PublicKey   string
-	PrivateKey  string
-	Start       string
-	End         string
-	Period      string
-	Granularity string
-	Metrics     *[]string
-}
-
-const atlasAPIBaseURL = "https://cloud.mongodb.com"
-
-func NewAtlasClient(httpClient *http.Client) *AtlasClient {
-	if httpClient == nil {
-		// Always use a new http.Client to avoid sharing the default client's Transport (which may be nil)
-		httpClient = &http.Client{}
+func NewAtlasClient(sdk *admin.APIClient) *AtlasClient {
+	if sdk == nil {
+		cfg, err := GetConfig()
+		if err != nil {
+			Logger.Error("Error getting config")
+			panic(err)
+		}
+		sdk, err = admin.NewClient(admin.UseDigestAuth(cfg.AtlasPublicKey, cfg.AtlasPrivateKey))
 	}
+
 	return &AtlasClient{
-		BaseURL:    atlasAPIBaseURL,
-		HTTPClient: httpClient,
+		AtlasSDK: sdk,
 	}
 }
 
-func (c *AtlasClient) GetMeasurementsForHost(ctx context.Context, opts *MeasurementsRequestSettings) (*MeasurementsResponse, error) {
-	u, _ := url.Parse(c.BaseURL)
-	q := u.Query()
-	if opts.Period != "" {
-		q.Set("period", opts.Period)
-	} else {
-		if opts.Start == "" {
-			oneDayAgo := time.Now().AddDate(0, 0, -1).UTC()
-			opts.Start = oneDayAgo.Format(time.RFC3339)
-		}
-		if opts.Start == "" {
-			currentTime := time.Now().UTC()
-			opts.End = currentTime.Format(time.RFC3339)
-		}
-		q.Set("start", opts.Start)
-		q.Set("end", opts.End)
+func (c *AtlasClient) GetMeasurementsForProcess(ctx context.Context, projectID string, host string, startDate *time.Time, endDate *time.Time, period *string, granularity *string) (*admin.ApiMeasurementsGeneralViewAtlas, error) {
+	params := &admin.GetHostMeasurementsApiParams{
+		GroupId:     projectID,
+		ProcessId:   host,
+		Granularity: granularity,
 	}
-	if opts.Granularity == "" {
-		opts.Granularity = ONE_MINUTE
+	if period != nil {
+		params.Period = period
+	} else if startDate != nil && endDate != nil {
+		params.Start = startDate
+		params.End = endDate
 	}
-
-	u.Path = fmt.Sprintf("/api/atlas/v2/groups/%s/processes/%s/measurements",
-		url.PathEscape(opts.ProjectId),
-		url.PathEscape(opts.ProcessId),
-	)
-	q.Set("granularity", opts.Granularity)
-	if opts.Metrics != nil && len(*opts.Metrics) > 0 {
-		for _, m := range *opts.Metrics {
-			q.Add("m", m)
-		}
-	}
-	u.RawQuery = q.Encode()
-	uri := u.String()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
-
+	measurements, response, err := c.AtlasSDK.MonitoringAndLogsApi.GetHostMeasurementsWithParams(ctx, params).Execute()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		Logger.Error("Failed to get host metrics: ", err)
+		return nil, err
 	}
-
-	req.Header.Set("Accept", "application/vnd.atlas.2025-03-12+json")
-
-	// Use Digest authentication
-	t := &digest.Transport{
-		Username: opts.PublicKey,
-		Password: opts.PrivateKey,
+	if response.StatusCode != http.StatusOK {
+		Logger.Error("Host metrics request not OK")
+		return nil, fmt.Errorf("host metrics returned a non-200 response: %d", response.StatusCode)
 	}
-	client := c.HTTPClient
-	if client == http.DefaultClient {
-		client = &http.Client{
-			Transport: t,
-			Timeout:   c.HTTPClient.Timeout,
-		}
-	} else {
-		baseTransport := c.HTTPClient.Transport
-		if baseTransport == nil {
-			baseTransport = http.DefaultTransport
-		}
-		t.Transport = baseTransport
-		client = &http.Client{
-			Transport: t,
-			Timeout:   c.HTTPClient.Timeout,
-		}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-	var r MeasurementsResponse
-	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-	return &r, nil
+	return measurements, nil
 }
 
-func (c *AtlasClient) getAtlasClusterInfo(ctx context.Context, publicKey, privateKey, projectID, clusterName string) (*AtlasClusterInfo, error) {
-	url := fmt.Sprintf("%s/api/atlas/v2/groups/%s/clusters/%s", c.BaseURL, projectID, clusterName)
+func (c *AtlasClient) GetDisksOnHost(ctx context.Context, projectID string, host string) (*[]admin.MeasurementDiskPartition, error) {
+	var result *[]admin.MeasurementDiskPartition
+	result = new([]admin.MeasurementDiskPartition)
+	hasNextPage := true
+	pageNum := 1
+	perPage := 100
+	includeCount := true
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Accept", "application/vnd.atlas.2025-03-12+json")
-
-	// Use Digest authentication
-	digestTransport := &digest.Transport{
-		Username: publicKey,
-		Password: privateKey,
-	}
-	client := c.HTTPClient
-	if client == http.DefaultClient {
-		client = &http.Client{
-			Transport: digestTransport,
-			Timeout:   c.HTTPClient.Timeout,
+	for hasNextPage == true {
+		partitions, response, err := c.AtlasSDK.MonitoringAndLogsApi.ListDiskPartitionsWithParams(ctx, &admin.ListDiskPartitionsApiParams{
+			GroupId:      projectID,
+			ProcessId:    host,
+			PageNum:      &pageNum,
+			ItemsPerPage: &perPage,
+			IncludeCount: &includeCount,
+		}).Execute()
+		if err != nil {
+			Logger.Error("Failed to get host partitions: ", err)
+			return nil, err
 		}
-	} else {
-		baseTransport := c.HTTPClient.Transport
-		if baseTransport == nil {
-			baseTransport = http.DefaultTransport
+		if response.StatusCode != http.StatusOK {
+			Logger.Error("Host partitions request for host not OK")
+			return nil, fmt.Errorf("host partitions returned a non-200 response: %d", response.StatusCode)
 		}
-		digestTransport.Transport = baseTransport
-		client = &http.Client{
-			Transport: digestTransport,
-			Timeout:   c.HTTPClient.Timeout,
+		*result = append(*result, *partitions.Results...)
+		if len(*result) >= *partitions.TotalCount || len(*partitions.Results) == 0 {
+			hasNextPage = false
+		} else {
+			pageNum++
 		}
 	}
+	return result, nil
+}
 
-	resp, err := client.Do(req)
+func (c *AtlasClient) GetAtlasClusterInfo(ctx context.Context, projectID, clusterName string) (*admin.ClusterDescription20240805, error) {
+	params := &admin.GetClusterApiParams{
+		GroupId:     projectID,
+		ClusterName: clusterName,
+	}
+	desc, response, err := c.AtlasSDK.ClustersApi.GetClusterWithParams(ctx, params).Execute()
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		Logger.Error("Failed to get host metrics: ", err)
+		return nil, err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	if response.StatusCode != http.StatusOK {
+		Logger.Error("Host metrics request not OK")
+		return nil, fmt.Errorf("host metrics returned a non-200 response: %d", response.StatusCode)
 	}
+	return desc, nil
+}
 
-	body, err := io.ReadAll(resp.Body)
+func (c *AtlasClient) GetAtlasClusterInfoString(ctx context.Context, projectID, clusterName string) (string, error) {
+	info, err := c.GetAtlasClusterInfo(ctx, projectID, clusterName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		panic(err)
 	}
-
-	var info AtlasClusterInfo
-	if err := json.Unmarshal(body, &info); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	var specs []string
+	for _, rs := range *info.ReplicationSpecs {
+		for _, rc := range *rs.RegionConfigs {
+			es := rc.ElectableSpecs
+			str := fmt.Sprintf("There are %d IOPS available, as the cluster's base Atlas tier is %s.", es.DiskIOPS, *es.InstanceSize)
+			specs = append(specs, str)
+		}
 	}
-
-	return &info, nil
+	return strings.Join(specs, "\n"), nil
 }
 
 func (c *AtlasClient) DeleteClusterLogs(ctx context.Context, logFiles []string) error {
@@ -246,14 +150,15 @@ func (c *AtlasClient) DeleteClusterLogs(ctx context.Context, logFiles []string) 
 	return nil
 }
 
-func (c *AtlasClient) DownloadClusterLogs(ctx context.Context, publicKey, privateKey, projectID, clusterName string, startDate int64, endDate int64) (map[string]string, error) {
+func (c *AtlasClient) DownloadClusterLogs(ctx context.Context, projectID, clusterName string, startDate int64, endDate int64) (map[string]string, error) {
+	// TODO: Support sharded clusters!
 	Logger.Info("Downloading Atlas cluster logs")
 	var hostLogMapping = make(map[string]string)
-	atlasClusterInfo, err := c.getAtlasClusterInfo(ctx, publicKey, privateKey, projectID, clusterName)
+	info, err := c.GetAtlasClusterInfo(ctx, projectID, clusterName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get cluster info: %w", err)
 	}
-	hosts, ports, err := GetHostsFromConnectionString(atlasClusterInfo.ConnectionStrings.Standard)
+	hosts, ports, err := GetHostsFromConnectionString(*info.ConnectionStrings.Standard)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get hosts from connection string: %w", err)
 	}
@@ -271,7 +176,7 @@ func (c *AtlasClient) DownloadClusterLogs(ctx context.Context, publicKey, privat
 		go func(i int, host string) {
 			defer wg.Done()
 			Logger.WithFields(logrus.Fields{"host": host}).Info("Downloading logs for host")
-			logFile, err := c.downloadClusterLogsForHost(ctx, publicKey, privateKey, projectID, host, startDate, endDate)
+			logFile, err := c.GetClusterLogsForHost(ctx, projectID, host, &startDate, &endDate)
 			if err != nil {
 				errChan <- fmt.Errorf("failed to download logs for host %s: %w", host, err)
 				return
@@ -331,50 +236,22 @@ func GetHostsFromConnectionString(connectionString string) ([]string, []string, 
 	return hosts, ports, nil
 }
 
-func (c *AtlasClient) downloadClusterLogsForHost(ctx context.Context, publicKey, privateKey, projectID, host string, startDate int64, endDate int64) (string, error) {
-	url := fmt.Sprintf(
-		"%s/api/atlas/v2/groups/%s/clusters/%s/logs/mongodb.gz?endDate=%d&startDate=%d",
-		c.BaseURL, projectID, host, endDate, startDate,
-	)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (c *AtlasClient) GetClusterLogsForHost(ctx context.Context, projectID, host string, startDate *int64, endDate *int64) (string, error) {
+	params := &admin.GetHostLogsApiParams{
+		GroupId:   projectID,
+		HostName:  host,
+		LogName:   "mongodb",
+		StartDate: startDate,
+		EndDate:   endDate,
+	}
+	log, response, err := c.AtlasSDK.MonitoringAndLogsApi.GetHostLogsWithParams(ctx, params).Execute()
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		Logger.Error("Failed to get host logs: ", err)
+		return "", err
 	}
-	req.Header.Set("Accept", "application/vnd.atlas.2023-02-01+gzip")
-	req.Header.Set("Content-Type", "application/gzip")
-
-	digestTransport := &digest.Transport{
-		Username: publicKey,
-		Password: privateKey,
-	}
-	client := c.HTTPClient
-	if client == http.DefaultClient {
-		client = &http.Client{
-			Transport: digestTransport,
-			Timeout:   c.HTTPClient.Timeout,
-		}
-	} else {
-		baseTransport := c.HTTPClient.Transport
-		if baseTransport == nil {
-			baseTransport = http.DefaultTransport
-		}
-		digestTransport.Transport = baseTransport
-		client = &http.Client{
-			Transport: digestTransport,
-			Timeout:   c.HTTPClient.Timeout,
-		}
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	if response.StatusCode != http.StatusOK {
+		Logger.Error("Host log request not OK")
+		return "", fmt.Errorf("host logs returned a non-200 response: %d", response.StatusCode)
 	}
 
 	tmpFile, err := os.CreateTemp("", fmt.Sprintf("mongod_%s_%d_%d_*.log.gz", host, startDate, endDate))
@@ -382,11 +259,38 @@ func (c *AtlasClient) downloadClusterLogsForHost(ctx context.Context, publicKey,
 		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 	defer tmpFile.Close()
+	defer log.Close()
 
-	_, err = io.Copy(tmpFile, resp.Body)
+	_, err = io.Copy(tmpFile, log)
 	if err != nil {
-		return "", fmt.Errorf("failed to write log to temp file: %w", err)
+		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
-
 	return tmpFile.Name(), nil
+}
+
+func (c *AtlasClient) GetDiskMetrics(ctx context.Context, projectID, host, partition *string, startDate *time.Time, endDate *time.Time, period *string, granularity *string) (*admin.ApiMeasurementsGeneralViewAtlas, error) {
+	params := &admin.GetDiskMeasurementsApiParams{
+		GroupId:       *projectID,
+		PartitionName: *partition,
+		ProcessId:     *host,
+		Start:         startDate,
+		End:           endDate,
+		Granularity:   granularity,
+	}
+	if period != nil {
+		params.Period = period
+	} else if startDate != nil && endDate != nil {
+		params.Start = startDate
+		params.End = endDate
+	}
+	measurements, response, err := c.AtlasSDK.MonitoringAndLogsApi.GetDiskMeasurementsWithParams(ctx, params).Execute()
+	if err != nil {
+		Logger.Error("Failed to get disk metrics: ", err)
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		Logger.Error("Disk metrics request for host not OK")
+		return nil, fmt.Errorf("disk metrics for host returned a non-200 response: %d", response.StatusCode)
+	}
+	return measurements, nil
 }

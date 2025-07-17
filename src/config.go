@@ -17,6 +17,7 @@ type Config struct {
 	ProjectId                   string   `json:"projectId"`
 	ClusterName                 string   `json:"clusterName"`
 	Period                      string   `json:"period"`
+	MetricsGranularity          string   `json:"metricsGranularity"`
 	LogLevel                    string   `json:"logLevel"`
 	OutputMongoURI              string   `json:"outputMongoUri"`
 	NumAnalyzedQueries          int      `json:"numAnalyzedQueries"`

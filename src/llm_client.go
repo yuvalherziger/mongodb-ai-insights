@@ -85,6 +85,9 @@ func (c *LLMClient) GenerateSlowQueryReport(ctx context.Context, dbName string) 
 		id := qHash.ID
 		driver := id.Driver
 		queryHash := id.Hash
+		if queryHash == "" {
+			continue
+		}
 		sq, err := GetSlowestQueryByShape(ctx, dbName, queryHash, driver)
 		if err != nil {
 			Logger.Error(err)
@@ -122,35 +125,56 @@ func (c *LLMClient) GenerateSlowQueryReport(ctx context.Context, dbName string) 
 	return nil
 }
 
-func (c *LLMClient) GenerateMetricsAnalysisReport(ctx context.Context, ac *AtlasClient) error {
+func (c *LLMClient) GenerateMetricsAnalysisReport(ctx context.Context, ac *AtlasClient, dbName string) error {
 	cfg, err := GetConfig()
-	start, end := ConvertISO8601DurationToUnixTimestamp(cfg.Period)
-	hostLogMapping, err := ac.DownloadClusterLogs(ctx, cfg.AtlasPublicKey, cfg.AtlasPrivateKey, cfg.ProjectId, cfg.ClusterName, start, end)
+	hostnames, err := GetHostNames(ctx, dbName)
 	if err != nil {
 		panic(err)
 	}
-	fileReader := &DefaultFileReader{}
 	var metricFiles []string
 
 	var eventStrings []string
 	// Iterate hostLogMapping keys and values, and use GetPrimaryElectionEvents
-	for host, logFile := range hostLogMapping {
-		events, err := GetPrimaryElectionEvents(fileReader, logFile)
+	for _, host := range hostnames {
+		events, err := GetPrimaryElectionEvents(ctx, dbName)
 		if err != nil {
 			panic(err)
 		}
 		for _, eventTime := range events {
 			eventStrings = append(eventStrings, fmt.Sprintf("%s became primary on %s", host, eventTime))
 		}
-		reqCfg := MeasurementsRequestSettings{
-			Period:     cfg.Period,
-			ProjectId:  cfg.ProjectId,
-			ProcessId:  host,
-			PublicKey:  cfg.AtlasPublicKey,
-			PrivateKey: cfg.AtlasPrivateKey,
-			Metrics:    &cfg.Metrics,
+
+		res, err := ac.GetMeasurementsForProcess(ctx, cfg.ProjectId, host, nil, nil, &cfg.Period, &cfg.MetricsGranularity)
+		if err != nil {
+			panic(err)
 		}
-		res, err := ac.GetMeasurementsForHost(ctx, &reqCfg)
+		partitions, err := ac.GetDisksOnHost(ctx, cfg.ProjectId, host)
+		if err != nil {
+			panic(err)
+		}
+
+		for _, p := range *partitions {
+			partition := p.PartitionName
+			res, err := ac.GetDiskMetrics(ctx, &cfg.ProjectId, &host, partition, nil, nil, &cfg.Period, &cfg.MetricsGranularity)
+			if err != nil {
+				Logger.Fatalf("Failed to get measurements: %v", err)
+			}
+			jsonData, err := json.Marshal(res)
+			if err != nil {
+				Logger.Fatalf("Failed to marshal result to JSON: %v", err)
+			}
+			tmpFile, err := os.CreateTemp("", "disk-measurements-*.json")
+			if err != nil {
+				Logger.Fatalf("Failed to create temporary file: %v", err)
+			}
+			defer tmpFile.Close()
+			if _, err := tmpFile.Write(jsonData); err != nil {
+				Logger.Fatalf("Failed to write JSON to temporary file: %v", err)
+			}
+			Logger.WithFields(logrus.Fields{"contextFilePath": tmpFile.Name()}).Info("Disk metrics JSON file written")
+			metricFiles = append(metricFiles, tmpFile.Name())
+		}
+
 		if err != nil {
 			Logger.Fatalf("Failed to get measurements: %v", err)
 		}
@@ -167,16 +191,20 @@ func (c *LLMClient) GenerateMetricsAnalysisReport(ctx context.Context, ac *Atlas
 		if _, err := tmpFile.Write(jsonData); err != nil {
 			Logger.Fatalf("Failed to write JSON to temporary file: %v", err)
 		}
-		Logger.WithFields(logrus.Fields{"contextFilePath": tmpFile.Name()}).Info("Context JSON file written")
+		Logger.WithFields(logrus.Fields{"contextFilePath": tmpFile.Name()}).Info("Host metrics JSON file written")
 		metricFiles = append(metricFiles, tmpFile.Name())
 	}
 
 	prompt, _ := GetMetricsAnalysisPrompt()
-
+	diskInfo, err := ac.GetAtlasClusterInfoString(ctx, cfg.ProjectId, cfg.ClusterName)
+	if err != nil {
+		panic(err)
+	}
 	finalPrompt := fmt.Sprintf(
-		"%s. Important additional context on when nodes became primary in the cluster: %s. Take into account this information when analyzing the data.",
+		"%s. Important additional context on when nodes became primary in the cluster: %s. %s. Take into account this information when analyzing the data.",
 		prompt,
 		strings.Join(eventStrings, ". "),
+		diskInfo,
 	)
 	insights, err := c.GetMetricInsights(
 		context.Background(),
