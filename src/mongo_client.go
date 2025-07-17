@@ -23,7 +23,7 @@ func GetMongoClient(ctx context.Context) (*mongo.Client, error) {
 		if err != nil {
 			panic(err)
 		}
-		uri := cfg.MongoURI
+		uri := cfg.OutputMongoURI
 		if uri == "" {
 			uri = "mongodb://localhost:27017/?directConnection=true"
 		}
@@ -49,6 +49,54 @@ type mongoConfigurationError string
 
 func (e mongoConfigurationError) Error() string {
 	return string(e)
+}
+
+func CreateIndex(ctx context.Context, coll *mongo.Collection, keys bson.D) error {
+	ixName, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: keys,
+	})
+	if err != nil {
+		return err
+	}
+	Logger.
+		WithField("coll", coll.Name()).
+		WithField("ixName", ixName).
+		Info("Index created in the 'slowQueries' collection")
+
+	return nil
+}
+
+func CreateIndexes(ctx context.Context, dbName string) error {
+	client, err := GetMongoClient(ctx)
+	if err != nil {
+		return err
+	}
+	indexCtx, indexCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer indexCancel()
+	slowQueriesColl := client.Database(dbName).Collection("slowQueries")
+	clientMetadataColl := client.Database(dbName).Collection("clientMetadata")
+	slowQueriesByDriverColl := client.Database(dbName).Collection("slowQueriesByDriver")
+	err = CreateIndex(indexCtx, slowQueriesColl, bson.D{
+		{"attr.queryHash", 1},
+		{"attr.durationMillis", -1},
+	})
+	if err != nil {
+		return err
+	}
+	err = CreateIndex(indexCtx, clientMetadataColl, bson.D{
+		{"ctxhost", 1},
+		{"attr.doc.driver", 1},
+	})
+	if err != nil {
+		return err
+	}
+	err = CreateIndex(indexCtx, slowQueriesByDriverColl, bson.D{
+		{"totalDurationMillis", -1},
+	})
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func InsertSlowQueriesBatch(ctx context.Context, docs []interface{}, dbName string) (*mongo.InsertManyResult, error) {
@@ -222,7 +270,7 @@ func GetSlowestQueryByShape(ctx context.Context, dbName string, queryHash string
 	}
 	sort := bson.D{
 		{"$sort", bson.D{
-			{"totalDurationMillis", -1},
+			{"attr.durationMillis", -1},
 		}},
 	}
 

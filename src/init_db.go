@@ -15,6 +15,12 @@ func InitDb(ctx context.Context, ac *AtlasClient, dbName string) error {
 	}
 	err = CreateSlowQueriesByDriver(ctx, dbName)
 	if err != nil {
+		Logger.Error("Error grouping slow queries by driver", err)
+		return err
+	}
+	err = CreateIndexes(ctx, dbName)
+	if err != nil {
+		Logger.Error("Error creating indexes", err)
 		return err
 	}
 	return nil

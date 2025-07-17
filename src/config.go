@@ -7,17 +7,19 @@ import (
 )
 
 type Config struct {
-	GeminiAPIKey    string   `json:"GeminiAPIKey"`
-	AtlasPublicKey  string   `json:"atlasPublicKey"`
-	AtlasPrivateKey string   `json:"atlasPrivateKey"`
-	Metrics         []string `json:"metrics"`
-	OutputFile      string   `json:"outputFile"`
-	GeminiModel     string   `json:"geminiModel"`
-	ProjectId       string   `json:"projectId"`
-	ClusterName     string   `json:"clusterName"`
-	Period          string   `json:"period"`
-	LogLevel        string   `json:"logLevel"`
-	MongoURI        string   `json:"mongoUri"`
+	GeminiAPIKey                string   `json:"GeminiAPIKey"`
+	AtlasPublicKey              string   `json:"atlasPublicKey"`
+	AtlasPrivateKey             string   `json:"atlasPrivateKey"`
+	Metrics                     []string `json:"metrics"`
+	MetricsReportOutputFile     string   `json:"metricsReportOutputFile"`
+	SlowQueriesReportOutputFile string   `json:"slowQueriesReportOutputFile"`
+	GeminiModel                 string   `json:"geminiModel"`
+	ProjectId                   string   `json:"projectId"`
+	ClusterName                 string   `json:"clusterName"`
+	Period                      string   `json:"period"`
+	LogLevel                    string   `json:"logLevel"`
+	OutputMongoURI              string   `json:"outputMongoUri"`
+	NumAnalyzedQueries          int      `json:"numAnalyzedQueries"`
 }
 
 var (

@@ -74,7 +74,7 @@ func (c *LLMClient) GenerateSlowQueryReport(ctx context.Context, dbName string) 
 	if modelName == "" {
 		modelName = defaultModel
 	}
-	slowestQueryHashes, err := GetTopQueryShapesByExecutionTime(ctx, dbName, 10)
+	slowestQueryHashes, err := GetTopQueryShapesByExecutionTime(ctx, dbName, cfg.NumAnalyzedQueries)
 	if err != nil {
 		Logger.Error(err)
 		return err
@@ -109,7 +109,7 @@ func (c *LLMClient) GenerateSlowQueryReport(ctx context.Context, dbName string) 
 		Logger.Error(err)
 		return err
 	}
-	resFile, err := os.Create(cfg.OutputFile)
+	resFile, err := os.Create(cfg.SlowQueriesReportOutputFile)
 	if err != nil {
 		Logger.Fatalf("Failed to create result file: %v", err)
 	}
@@ -188,7 +188,7 @@ func (c *LLMClient) GenerateMetricsAnalysisReport(ctx context.Context, ac *Atlas
 		panic(err)
 	}
 
-	resFile, err := os.Create(cfg.OutputFile)
+	resFile, err := os.Create(cfg.MetricsReportOutputFile)
 	if err != nil {
 		Logger.Fatalf("Failed to create result file: %v", err)
 	}

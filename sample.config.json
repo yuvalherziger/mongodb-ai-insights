@@ -1,7 +1,7 @@
 {
-  "GeminiAPIKey": "<YOUR GEMINI API KEY>",
-  "atlasPublicKey": "<YOUR ATLAS API PUBLIC KEY>",
-  "atlasPrivateKey": "<YOUR ATLAS API PRIVATE KEY>",
+  "GeminiAPIKey": "**************",
+  "atlasPublicKey": "**************",
+  "atlasPrivateKey": "**************",
   "metrics": [
     "SYSTEM_NORMALIZED_CPU_USER",
     "SYSTEM_MEMORY_USED",
@@ -9,10 +9,13 @@
     "QUERY_TARGETING_SCANNED_PER_RETURNED",
     "QUERY_TARGETING_SCANNED_OBJECTS_PER_RETURNED"
   ],
-  "outputFile": "./health-report.md",
-  "geminiModel": "gemini-2.5-flash-lite-preview-06-17",
-  "projectId": "<YOUR ATLAS PROJECT ID>",
-  "clusterName": "<YOUR ATLAS PROJECT NAME>",
-  "period": "PT12H",
-  "logLevel": "info"
+  "metricsReportOutputFile": "./metrics-report.md",
+  "slowQueriesReportOutputFile": "./slow-query-report.md",
+  "geminiModel": "gemini-2.5-pro",
+  "projectId": "**************",
+  "clusterName": "**************",
+  "period": "PT48H",
+  "logLevel": "info",
+  "numAnalyzedQueries": 10,
+  "outputMongoUri": "mongodb://localhost:27017/?directConnection=true"
 }
