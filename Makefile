@@ -1,6 +1,6 @@
-BINARY_NAME=mongodb_insights_provider
+BINARY_NAME=mongodb_ai_analyzer
 DIST_DIR=./dist
-SRC_DIR=./
+SRC_DIR=./src
 PKG=$(SRC_DIR)/...
 GO=go
 DOCKER=docker
